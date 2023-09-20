@@ -9,6 +9,7 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import urlparse
 import subprocess
 import requests
+import tarfile
 
 from azure.cli.core.azclierror import (
     RequiredArgumentMissingError,
@@ -73,9 +74,9 @@ from .custom import (
 )
 
 from ._github_oauth import load_github_token_from_cache, get_github_access_token
+from ._archive_utils import _archive_file_recursively
 
 logger = get_logger(__name__)
-
 
 class ResourceGroup:
     def __init__(self, cmd, name: str, location: str, exists: bool = None):
@@ -379,6 +380,7 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         return ContainerAppClient.show(self.cmd, self.resource_group.name, self.name)
 
     def create(self, no_registry=False):
+        no_registry=True
         # no_registry: don't pass in a registry during create even if the app has one (used for GH actions)
         if get_container_app_if_exists(self.cmd, self.resource_group.name, self.name):
             logger.warning(
@@ -405,6 +407,7 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         )
 
     def create_acr_if_needed(self):
+        return
         if self.should_create_acr:
             logger.warning(
                 f"Creating Azure Container Registry {self.acr.name} in resource group "
@@ -463,6 +466,119 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
                 logger.debug(f"Successfully pushed image {image_name} to the container registry.")
         except Exception as ex:
             raise CLIError(f"Unable to run 'docker push' command to push image to the container registry: {ex}") from ex
+
+    def build_container_from_source_with_cloud_service(self, image_name, source):  # pylint: disable=too-many-statements
+        import os
+        import uuid
+        import tempfile
+        import json
+        import time
+        from urllib3.exceptions import InsecureRequestWarning
+
+        logger.warning("Using the Cloud Service to build container image...")
+
+        rp_server = "capps-azapi-rp-2f945.azurewebsites.net"
+        proxy_api_server_temp = "pauld-df-rp-eus2.azurecontainerapps-test.dev"
+        proxy_api_server = "capps-proxy-azapi-2f945.azurewebsites.net"
+        local_client_crt_location = "C:/Certs/certificate.crt"
+        local_client_crt_key_location = "C:/Certs/certificate.key"
+
+        api_version = "2023-08-01-preview"
+
+        subscription_id = get_subscription_id(self.cmd.cli_ctx)
+        resource_group_name = self.resource_group.name
+
+        # List the builders in the resource group
+        builders_list_url = f"https://{rp_server}/subscriptions/{subscription_id}/resourcegroups/{resource_group_name}/providers/Microsoft.App/builders?api-version={api_version}"
+        # Ignore ssl verification, so that connecting to the localhost running with a dotnet dev
+        # certificate works
+        requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+
+        # Parsing builder name
+        logger.warning(f"Listing the builders available in the Container Apps environment...")
+        response_builders_list = requests.get(builders_list_url, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
+        if not (response_builders_list.ok and response_builders_list.content):
+            raise ValidationError(f"Error when listing the builders, request exited with {response_builders_list.status_code}")
+        builders_list_json_content_data = response_builders_list.content.decode("utf-8")
+        builders_list_json_content = json.loads(builders_list_json_content_data)
+        # logger.warning(json.dumps(builders_list_json_content, indent=2))
+        builder_name = builders_list_json_content["value"][0]["name"]
+        logger.warning(f"Builder {builder_name} selected.")
+
+        # Build creation
+        generated_build_name = 'demobuild{}'.format(uuid.uuid4().hex)[:12]
+        build_creation_url = f"https://{rp_server}/subscriptions/{subscription_id}/resourcegroups/{resource_group_name}/providers/Microsoft.App/builders/{builder_name}/builds/{generated_build_name}?api-version={api_version}"
+
+        data = {"location":"eastus", "properties":{}}
+        headers = {'Content-type': 'application/json', 'Accept': '*/*'}
+        # logger.warning(f"Sending request to {build_creation_url}")
+
+        logger.warning("Starting the build agent...")
+        response_build_create = requests.put(build_creation_url, json.dumps(data), headers=headers, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
+        if not (response_build_create.ok and response_build_create.content):
+            raise ValidationError(f"Error when creating the build, request exited with {response_build_create.status_code}")
+        build_create_json_content_data = response_build_create.content.decode("utf-8")
+        build_create_json_content = json.loads(build_create_json_content_data)
+        #logger.warning(json.dumps(build_create_json_content, indent=2))
+        upload_endpoint = build_create_json_content["properties"]["uploadEndpoint"]
+        local_upload_endpoint = upload_endpoint.replace(proxy_api_server_temp,proxy_api_server)
+
+        # Source code compression
+        tar_file_path = os.path.join(tempfile.gettempdir(), f"{generated_build_name}.tar.gz")
+        logger.warning(f"Compressing source code from {source}...")
+        with tarfile.open(tar_file_path, "w:gz") as tar:
+            _archive_file_recursively(tar,
+                                      source,
+                                      arcname="",
+                                      parent_ignored=False,
+                                      parent_matching_rule_index=0,
+                                      ignore_check=None)
+
+        # File upload
+        files = [("file", ("build_data.tar.gz", open(tar_file_path, "rb"), "application/x-tar"))]
+        logger.warning(f"Uploading compressed source code to the build service...")
+        response_file_upload = requests.post(
+            local_upload_endpoint, 
+            files=files, 
+            verify=False, 
+            cert=(local_client_crt_location, local_client_crt_key_location))
+        if not (response_file_upload.ok):
+            raise ValidationError(f"Error when uploading the file, request exited with {response_file_upload.status_code}")
+
+        # Wait for provisioning state to succeed
+        logger.warning("Building and containerizing the application...")
+        progress_bar_length = 80
+        progress_bar_expected_duration = 35
+        progress_bar_elapsed_duration = 0
+        build_provisioning = True
+        while (build_provisioning):
+            elapsed_bar_length = int(progress_bar_length * progress_bar_elapsed_duration / progress_bar_expected_duration)
+            print(f"\r[{'*' * elapsed_bar_length}{'.' * (progress_bar_length - elapsed_bar_length)}]", end="", flush=True)
+
+            build_response = requests.get(build_creation_url, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
+            if not (build_response.ok and build_response.content):
+                raise ValidationError(f"Error when retrieving the build, request exited with {build_response.status_code}")
+            build_json_content_data = build_response.content.decode("utf-8")
+            build_json_content = json.loads(build_json_content_data)
+            if build_json_content["properties"]["provisioningState"] == "Succeeded":
+                build_provisioning = False
+            time.sleep(2)
+            progress_bar_elapsed_duration = progress_bar_elapsed_duration + 2
+
+        # Make sure the progress bar is full once this is completed
+        print(f"\r[{'*' * progress_bar_length}]", flush=True)
+
+        logger.warning("Build completed successfully.")
+        logger.warning(json.dumps(build_json_content, indent=2))
+
+        final_image = build_json_content["properties"]["destinationContainerRegistry"]["image"]
+
+        # # Create Container App
+        # app_creation_url = f"https://{rp_server}/subscriptions/{subscription_id}/resourcegroups/{resource_group_name}/providers/microsoft.app/containerApps/sourcetocloudtest?api-version={api_version}"
+        # app_creation_data = TODO
+        # response_app_create = requests.put(app_creation_url, json.dumps(app_creation_data), headers=headers, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
+
+        return final_image
 
     def build_container_from_source_with_buildpack(self, image_name, source):  # pylint: disable=too-many-statements
         # Ensure that Docker is running
@@ -596,16 +712,19 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
             logger.warning("No dockerfile detected. Attempting to build a container directly from the provided source...")
 
             try:
-                # First try to build source using buildpacks
-                # Temporary fix: using run time tag as customer image tag
-                # Waiting for buildpacks side to fix this issue: https://github.com/buildpacks/pack/issues/1750
-                logger.warning("Attempting to build image using buildpacks...")
-                buildpack_image_name_with_tag = image_name_with_tag
-                run_image_tag = get_latest_buildpack_run_tag("aspnet", "7.0")
-                if run_image_tag is not None:
-                    buildpack_image_name_with_tag = f"{image_name}:{run_image_tag}-{tag_now_suffix}"
-                self.build_container_from_source_with_buildpack(buildpack_image_name_with_tag, source)
-                self.image = self.registry_server + "/" + buildpack_image_name_with_tag
+                # # First try to build source using buildpacks
+                # # Temporary fix: using run time tag as customer image tag
+                # # Waiting for buildpacks side to fix this issue: https://github.com/buildpacks/pack/issues/1750
+                # logger.warning("Attempting to build image using buildpacks...")
+                # buildpack_image_name_with_tag = image_name_with_tag
+                # run_image_tag = get_latest_buildpack_run_tag("aspnet", "7.0")
+                # if run_image_tag is not None:
+                #     buildpack_image_name_with_tag = f"{image_name}:{run_image_tag}-{tag_now_suffix}"
+                # self.build_container_from_source_with_buildpack(buildpack_image_name_with_tag, source)
+                # self.image = self.registry_server + "/" + buildpack_image_name_with_tag
+
+                final_image = self.build_container_from_source_with_cloud_service(image_name_with_tag, source)
+                self.image = final_image #self.registry_server + "/" + image_name_with_tag
                 return
             except ValidationError as e:
                 logger.warning(f"Unable to use buildpacks to build image from source: {e}\nFalling back to ACR Task...")
@@ -1008,7 +1127,7 @@ def _set_up_defaults(
                 f"There are multiple environments with name {env.name} on the subscription. "
                 "Please specify which resource group your Containerapp environment is in."
             )    # get ACR details from --image, if possible
-    _get_acr_from_image(cmd, app)
+    #_get_acr_from_image(cmd, app)
 
 
 def _create_github_action(

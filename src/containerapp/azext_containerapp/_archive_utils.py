@@ -189,8 +189,12 @@ def _archive_file_recursively(tar, name, arcname, parent_ignored, parent_matchin
         raise CLIInternalError("tarfile: unsupported type {}".format(name))
 
     # check if the file/dir is ignored
-    ignored, matching_rule_index = ignore_check(
-        tarinfo, parent_ignored, parent_matching_rule_index)
+    if ignore_check is not None:
+        ignored, matching_rule_index = ignore_check(
+            tarinfo, parent_ignored, parent_matching_rule_index)
+    else:
+        ignored = False
+        matching_rule_index = parent_matching_rule_index
 
     if not ignored:
         # append the tar header and data to the archive

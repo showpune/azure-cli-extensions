@@ -623,6 +623,7 @@ def _update_revision_env_secretrefs(containers, name):
 
 
 def store_as_secret_and_return_secret_ref(secrets_list, registry_user, registry_server, registry_pass, update_existing_secret=False, disable_warnings=False):
+    #return
     if registry_pass.startswith("secretref:"):
         # If user passed in registry password using a secret
 
@@ -1269,6 +1270,7 @@ def _get_app_from_revision(revision):
 
 
 def _infer_acr_credentials(cmd, registry_server, disable_warnings=False):
+    return
     # If registry is Azure Container Registry, we can try inferring credentials
     if ACR_IMAGE_SUFFIX not in registry_server:
         raise RequiredArgumentMissingError('Registry username and password are required if not using Azure Container Registry.')
