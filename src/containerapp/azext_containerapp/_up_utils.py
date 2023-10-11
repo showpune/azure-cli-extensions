@@ -548,12 +548,14 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         # Wait for provisioning state to succeed
         logger.warning("Building and containerizing the application...")
         progress_bar_length = 80
-        progress_bar_expected_duration = 35
+        progress_bar_expected_duration = 10
         progress_bar_elapsed_duration = 0
         build_provisioning = True
         while (build_provisioning):
             elapsed_bar_length = int(progress_bar_length * progress_bar_elapsed_duration / progress_bar_expected_duration)
-            print(f"\r[{'*' * elapsed_bar_length}{'.' * (progress_bar_length - elapsed_bar_length)}]", end="", flush=True)
+            filled_bar_length = elapsed_bar_length
+            remaining_bar_length = progress_bar_length - filled_bar_length - 1
+            print(f"\r[{'=' * filled_bar_length}>{' ' * remaining_bar_length}]", end="", flush=True)
 
             build_response = requests.get(build_creation_url, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
             if not (build_response.ok and build_response.content):
@@ -562,14 +564,14 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
             build_json_content = json.loads(build_json_content_data)
             if build_json_content["properties"]["provisioningState"] == "Succeeded":
                 build_provisioning = False
-            time.sleep(2)
-            progress_bar_elapsed_duration = progress_bar_elapsed_duration + 2
+            time.sleep(0.5)
+            progress_bar_elapsed_duration = progress_bar_elapsed_duration + 0.5
 
         # Make sure the progress bar is full once this is completed
-        print(f"\r[{'*' * progress_bar_length}]", flush=True)
+        print(f"\r[{'=' * (progress_bar_length - 1)}>]", flush=True)
 
-        logger.warning("Build completed successfully.")
-        logger.warning(json.dumps(build_json_content, indent=2))
+        logger.warning(f"Build completed successfully.")
+        #logger.warning(json.dumps(build_json_content, indent=2))
 
         final_image = build_json_content["properties"]["destinationContainerRegistry"]["image"]
 

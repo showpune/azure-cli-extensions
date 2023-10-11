@@ -152,7 +152,10 @@ class ContainerAppClient():
 
     @classmethod
     def create_or_update(cls, cmd, resource_group_name, name, container_app_envelope, no_wait=False):
-        management_hostname = cmd.cli_ctx.cloud.endpoints.resource_manager
+        import requests
+        from urllib3.exceptions import InsecureRequestWarning
+
+        management_hostname = "https://capps-azapi-rp-2f945.azurewebsites.net/"#cmd.cli_ctx.cloud.endpoints.resource_manager
         sub_id = get_subscription_id(cmd.cli_ctx)
         url_fmt = "{}/subscriptions/{}/resourceGroups/{}/providers/Microsoft.App/containerApps/{}?api-version={}"
         request_url = url_fmt.format(
@@ -160,25 +163,64 @@ class ContainerAppClient():
             sub_id,
             resource_group_name,
             name,
-            cls.api_version)
+            "2023-08-01-preview")#cls.api_version)
 
-        r = send_raw_request(cmd.cli_ctx, "PUT", request_url, body=json.dumps(container_app_envelope))
+        # Use requests directly to provide cert when creating the container app
+        local_client_crt_location = "C:/Certs/certificate.crt"
+        local_client_crt_key_location = "C:/Certs/certificate.key"
 
-        if no_wait:
-            return r.json()
-        elif r.status_code == 201:
-            operation_url = r.headers.get(HEADER_AZURE_ASYNC_OPERATION)
-            poll_status(cmd, operation_url)
-            url_fmt = "{}/subscriptions/{}/resourceGroups/{}/providers/Microsoft.App/containerApps/{}?api-version={}"
-            request_url = url_fmt.format(
-                management_hostname.strip('/'),
-                sub_id,
-                resource_group_name,
-                name,
-                cls.api_version)
-            r = send_raw_request(cmd.cli_ctx, "GET", request_url)
+        # logger.warning("REQUEST URL")
+        # logger.warning(request_url)
+        #container_app_envelope["location"] = "eastus2"
+        #logger.warning(json.dumps(container_app_envelope))
 
-        return r.json()
+        environment_id = container_app_envelope["properties"]["environmentId"]
+        image = "10.0.204.141/demobuildae3"#container_app_envelope["properties"]["template"]["containers"][0]["image"]
+        requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+
+        container_app_payload = "{{'location': 'eastus2','properties': {{'managedEnvironmentId': '{}','configuration': {{'ingress': {{'external': true,'targetPort': 8080}}}},'template': {{'containers': [{{'image': '{}','name': 'ca-daniv-test-10052'}}]}}}}}}"
+        #"{'location': 'eastus2','properties': {'managedEnvironmentId': {},'configuration': {'ingress': {'external': true,'targetPort': 8080}},'template': {'containers': [{'image': {},'name': 'ca-daniv-test-10052'}]}}}"
+        container_app_envelope = container_app_payload.format(environment_id, image)#container_app_envelope["location"]
+        container_app_envelope = container_app_envelope.replace("'", '"')
+        # logger.warning("BODY")
+        # logger.warning(container_app_envelope)
+        headers = {'Content-type': 'application/json', 'Accept': '*/*', 'Connection': 'keep-alive', 'Accept-Encoding': 'gzip, deflate, br', 'User-Agent': 'PostmanRuntime/7.33.1', 'Cache-Control': 'no-cache'}
+        #response = requests.put(request_url, json.dumps(container_app_envelope), headers=headers, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
+        while(True):
+            response = requests.put(request_url, container_app_envelope, headers=headers, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
+            #break;
+            if (response.ok):
+                break;
+            logger.warning("Manifest Unknown error when trying to pull the image to create a Container App. Trying again...")
+            time.sleep(10)
+        # logger.warning("RESPONSE")
+        # logger.warning(response.content.decode("utf-8"))
+        return json.loads(response.content.decode("utf-8"))
+
+        # Uncomment once we're public
+
+        # local_client_crt_location = "C:/Certs/certificate.crt"
+        # local_client_crt_key_location = "C:/Certs/certificate.key"
+        # logger.warning("FINALEMENT!")
+        # logger.warning(request_url)
+        # logger.warning(json.dumps(container_app_envelope))
+        # r = send_raw_request(cmd.cli_ctx, "PUT", request_url, body=json.dumps(container_app_envelope), cert=(local_client_crt_location, local_client_crt_key_location))
+
+        # if no_wait:
+        #     return r.json()
+        # elif r.status_code == 201:
+        #     operation_url = r.headers.get(HEADER_AZURE_ASYNC_OPERATION)
+        #     poll_status(cmd, operation_url)
+        #     url_fmt = "{}/subscriptions/{}/resourceGroups/{}/providers/Microsoft.App/containerApps/{}?api-version={}"
+        #     request_url = url_fmt.format(
+        #         management_hostname.strip('/'),
+        #         sub_id,
+        #         resource_group_name,
+        #         name,
+        #         cls.api_version)
+        #     r = send_raw_request(cmd.cli_ctx, "GET", request_url)
+
+        # return r.json()
 
     @classmethod
     def update(cls, cmd, resource_group_name, name, container_app_envelope, no_wait=False):

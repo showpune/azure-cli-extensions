@@ -551,7 +551,6 @@ class ContainerAppCreateDecorator(BaseContainerAppDecorator):
             r = self.client.create_or_update(
                 cmd=self.cmd, resource_group_name=self.get_argument_resource_group_name(), name=self.get_argument_name(), container_app_envelope=self.containerapp_def,
                 no_wait=self.get_argument_no_wait())
-
             return r
         except Exception as e:
             handle_raw_exception(e)
@@ -1213,6 +1212,7 @@ class ContainerAppPreviewCreateDecorator(ContainerAppCreateDecorator):
             dockerfile = "Dockerfile"
             has_dockerfile = _has_dockerfile(self.get_argument_source(), dockerfile)
             # Uses buildpacks or an ACR Task to generate image if Dockerfile was not provided by the user
+            logger.Warning("789")
             app.run_acr_build(dockerfile, self.get_argument_source(), quiet=False, build_from_source=not has_dockerfile)
             # Validate containers exist
             containers = safe_get(self.containerapp_def, "properties", "template", "containers", default=[])
@@ -1491,6 +1491,7 @@ class ContainerAppPreviewUpdateDecorator(ContainerAppUpdateDecorator):
         _get_registry_details(cmd, app, self.get_argument_source())  # fetch ACR creds from arguments registry arguments
 
         # Uses buildpacks or an ACR Task to generate image if Dockerfile was not provided by the user
+        logger.Warning("456")
         app.run_acr_build(dockerfile, self.get_argument_source(), quiet=False, build_from_source=not has_dockerfile)
 
         # Validate an image associated with the container app exists

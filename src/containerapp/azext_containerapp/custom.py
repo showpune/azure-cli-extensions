@@ -3585,7 +3585,7 @@ def containerapp_up(cmd,
     if browse:
         open_containerapp_in_browser(cmd, app.name, app.resource_group.name)
 
-    up_output(app, no_dockerfile=(source and not _has_dockerfile(source, dockerfile)))
+    #up_output(app, no_dockerfile=(source and not _has_dockerfile(source, dockerfile)))
 
 
 def containerapp_up_logic(cmd, resource_group_name, name, managed_env, image, env_vars, ingress, target_port, registry_server, registry_user, workload_profile_name, registry_pass):

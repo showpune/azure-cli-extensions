@@ -701,7 +701,7 @@ def _get_default_log_analytics_location(cmd):
 def get_container_app_if_exists(cmd, resource_group_name, name):
     app = None
     try:
-        app = ContainerAppClient.show(cmd=cmd, resource_group_name=resource_group_name, name=name)
+        app = None#DOUDOUContainerAppClient.show(cmd=cmd, resource_group_name=resource_group_name, name=name)
     except:  # pylint: disable=bare-except
         pass
     return app
