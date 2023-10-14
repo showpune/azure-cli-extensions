@@ -477,6 +477,10 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
 
     def build_container_from_source_with_cloud_service(self, image_name, source):  # pylint: disable=too-many-statements
         stop_spinner = False
+        font_bold_green = "\033[32;1m"
+        font_default = "\033[0m"
+        font_bold = "\033[0;1m"
+        font_blue = "\033[94m"
         def display_spinner(task_title):
             # Hide the cursor
             print('\033[?25l', end="")
@@ -494,7 +498,7 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
                     time_elapsed = time.time() - start_time
                     print(f"\r    {spinner} {task_title} ({time_elapsed:.1f}s)", end="", flush=True)
                     time.sleep(0.15) 
-                print(f"\r    (✓) Done: {task_title}\n", end="", flush=True)
+                print(f"\r    {font_bold_green}(✓) Done:{font_default} {task_title}\n", end="", flush=True)
                 # Display the cursor
                 print('\033[?25h', end="")
             thread = Thread(target=spin)
@@ -520,7 +524,7 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         # certificate works
         requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
-        print(f"\n  Preparing the Cloud Build environment\n")
+        print(f"\n  {font_bold}Preparing the Cloud Build environment{font_default}\n")
 
         #stop_spinner = False
         thread = display_spinner("Listing the builders available in the Container Apps environment")
@@ -535,7 +539,7 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         thread.join()
         print(f"              Builder selected: {builder_name}")
 
-        print("\n  Building the application\n")
+        print(f"\n  {font_bold}Building the application{font_default}\n")
 
         # Build creation
         stop_spinner = False
@@ -559,7 +563,7 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
 
         # Source code compression
         stop_spinner = False
-        thread = display_spinner(f"Compressing source code from {source}")
+        thread = display_spinner(f"Compressing data: {font_bold}{source}{font_default}")
         tar_file_path = os.path.join(tempfile.gettempdir(), f"{build_name}.tar.gz")
         with tarfile.open(tar_file_path, "w:gz") as tar:
             _archive_file_recursively(tar,
@@ -573,7 +577,7 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
 
         # File upload
         stop_spinner = False
-        thread = display_spinner(f"Uploading compressed source code to the build service")
+        thread = display_spinner(f"Uploading compressed data")
         files = [("file", ("build_data.tar.gz", open(tar_file_path, "rb"), "application/x-tar"))]
         response_file_upload = requests.post(
             local_upload_endpoint, 
@@ -612,7 +616,7 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         final_image = "default" + final_image[final_image.find('/'):]
         stop_spinner = True
         thread.join()
-        print(f"              Successfully built image: {final_image}\n")
+        print(f"              Successfully built image: {font_bold}{final_image}{font_default}\n")
 
         # Make sure the progress bar is full once this is completed
         #print(f"\r    [{'=' * (progress_bar_length - 1)}>]", flush=True)
