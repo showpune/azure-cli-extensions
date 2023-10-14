@@ -11,6 +11,14 @@ import subprocess
 import requests
 import tarfile
 
+import os
+import uuid
+import tempfile
+import json
+import time
+from urllib3.exceptions import InsecureRequestWarning
+from threading import Thread
+
 from azure.cli.core.azclierror import (
     RequiredArgumentMissingError,
     ValidationError,
@@ -468,12 +476,30 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
             raise CLIError(f"Unable to run 'docker push' command to push image to the container registry: {ex}") from ex
 
     def build_container_from_source_with_cloud_service(self, image_name, source):  # pylint: disable=too-many-statements
-        import os
-        import uuid
-        import tempfile
-        import json
-        import time
-        from urllib3.exceptions import InsecureRequestWarning
+        stop_spinner = False
+        def display_spinner(task_title):
+            # Hide the cursor
+            print('\033[?25l', end="")
+            def spin():
+                loop_counter = 0
+                start_time = time.time()
+                while (stop_spinner == False):
+                    # loop_counter = (loop_counter + 1) % 13
+                    # loading_bar_left_spaces_count =  loop_counter - 6 if loop_counter > 6 else 0
+                    # loading_bar_right_spaces_count =  6 - loop_counter if loop_counter < 6 else 0
+                    loop_counter = (loop_counter + 1) % 17
+                    loading_bar_left_spaces_count =  loop_counter - 9 if loop_counter > 9 else 0
+                    loading_bar_right_spaces_count =  6 - loop_counter if loop_counter < 7 else 0
+                    spinner = f"[{' ' * loading_bar_left_spaces_count}{'=' * (7 - loading_bar_left_spaces_count - loading_bar_right_spaces_count)}{' ' * loading_bar_right_spaces_count}]"
+                    time_elapsed = time.time() - start_time
+                    print(f"\r    {spinner} {task_title} ({time_elapsed:.1f}s)", end="", flush=True)
+                    time.sleep(0.15) 
+                print(f"\r    (✓) Done: {task_title}\n", end="", flush=True)
+                # Display the cursor
+                print('\033[?25h', end="")
+            thread = Thread(target=spin)
+            thread.start()
+            return thread
 
         logger.warning("Using the Cloud Service to build container image...")
 
@@ -494,8 +520,10 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         # certificate works
         requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
-        # Parsing builder name
-        logger.warning(f"Listing the builders available in the Container Apps environment...")
+        print(f"\n  Preparing the Cloud Build environment\n")
+
+        #stop_spinner = False
+        thread = display_spinner("Listing the builders available in the Container Apps environment")
         response_builders_list = requests.get(builders_list_url, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
         if not (response_builders_list.ok and response_builders_list.content):
             raise ValidationError(f"Error when listing the builders, request exited with {response_builders_list.status_code}")
@@ -503,29 +531,36 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         builders_list_json_content = json.loads(builders_list_json_content_data)
         # logger.warning(json.dumps(builders_list_json_content, indent=2))
         builder_name = builders_list_json_content["value"][0]["name"]
-        logger.warning(f"Builder {builder_name} selected.")
+        stop_spinner = True
+        thread.join()
+        print(f"              Builder selected: {builder_name}")
+
+        print("\n  Building the application\n")
 
         # Build creation
-        generated_build_name = 'demobuild{}'.format(uuid.uuid4().hex)[:12]
+        stop_spinner = False
+        thread = display_spinner("Starting the build agent")
+        generated_build_name = 'build{}'.format(uuid.uuid4().hex)[:12]
         build_creation_url = f"https://{rp_server}/subscriptions/{subscription_id}/resourcegroups/{resource_group_name}/providers/Microsoft.App/builders/{builder_name}/builds/{generated_build_name}?api-version={api_version}"
-
         data = {"location":"eastus", "properties":{}}
         headers = {'Content-type': 'application/json', 'Accept': '*/*'}
-        # logger.warning(f"Sending request to {build_creation_url}")
-
-        logger.warning("Starting the build agent...")
         response_build_create = requests.put(build_creation_url, json.dumps(data), headers=headers, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
         if not (response_build_create.ok and response_build_create.content):
             raise ValidationError(f"Error when creating the build, request exited with {response_build_create.status_code}")
         build_create_json_content_data = response_build_create.content.decode("utf-8")
         build_create_json_content = json.loads(build_create_json_content_data)
         #logger.warning(json.dumps(build_create_json_content, indent=2))
+        build_name = build_create_json_content["name"]
         upload_endpoint = build_create_json_content["properties"]["uploadEndpoint"]
         local_upload_endpoint = upload_endpoint.replace(proxy_api_server_temp,proxy_api_server)
+        stop_spinner = True
+        thread.join()
+        print(f"              Build agent started: {build_name}")
 
         # Source code compression
-        tar_file_path = os.path.join(tempfile.gettempdir(), f"{generated_build_name}.tar.gz")
-        logger.warning(f"Compressing source code from {source}...")
+        stop_spinner = False
+        thread = display_spinner(f"Compressing source code from {source}")
+        tar_file_path = os.path.join(tempfile.gettempdir(), f"{build_name}.tar.gz")
         with tarfile.open(tar_file_path, "w:gz") as tar:
             _archive_file_recursively(tar,
                                       source,
@@ -533,10 +568,13 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
                                       parent_ignored=False,
                                       parent_matching_rule_index=0,
                                       ignore_check=None)
+        stop_spinner = True
+        thread.join()
 
         # File upload
+        stop_spinner = False
+        thread = display_spinner(f"Uploading compressed source code to the build service")
         files = [("file", ("build_data.tar.gz", open(tar_file_path, "rb"), "application/x-tar"))]
-        logger.warning(f"Uploading compressed source code to the build service...")
         response_file_upload = requests.post(
             local_upload_endpoint, 
             files=files, 
@@ -544,18 +582,21 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
             cert=(local_client_crt_location, local_client_crt_key_location))
         if not (response_file_upload.ok):
             raise ValidationError(f"Error when uploading the file, request exited with {response_file_upload.status_code}")
+        stop_spinner = True
+        thread.join()
 
         # Wait for provisioning state to succeed
-        logger.warning("Building and containerizing the application...")
-        progress_bar_length = 80
-        progress_bar_expected_duration = 10
-        progress_bar_elapsed_duration = 0
+        stop_spinner = False
+        thread = display_spinner(f"Building and containerizing the application")
+        # progress_bar_length = 80
+        # progress_bar_expected_duration = 10
+        # progress_bar_elapsed_duration = 0
         build_provisioning = True
         while (build_provisioning):
-            elapsed_bar_length = int(progress_bar_length * progress_bar_elapsed_duration / progress_bar_expected_duration)
-            filled_bar_length = elapsed_bar_length
-            remaining_bar_length = progress_bar_length - filled_bar_length - 1
-            print(f"\r[{'=' * filled_bar_length}>{' ' * remaining_bar_length}]", end="", flush=True)
+            # elapsed_bar_length = int(progress_bar_length * progress_bar_elapsed_duration / progress_bar_expected_duration)
+            # filled_bar_length = elapsed_bar_length
+            # remaining_bar_length = progress_bar_length - filled_bar_length - 1
+            # print(f"\r    [{'=' * filled_bar_length}>{' ' * remaining_bar_length}]", end="", flush=True)
 
             build_response = requests.get(build_creation_url, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
             if not (build_response.ok and build_response.content):
@@ -564,16 +605,21 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
             build_json_content = json.loads(build_json_content_data)
             if build_json_content["properties"]["provisioningState"] == "Succeeded":
                 build_provisioning = False
-            time.sleep(0.5)
-            progress_bar_elapsed_duration = progress_bar_elapsed_duration + 0.5
+            time.sleep(3)
+            #progress_bar_elapsed_duration = progress_bar_elapsed_duration + 0.5
+        final_image = build_json_content["properties"]["destinationContainerRegistry"]["image"]
+        # Hack while we get the final format
+        final_image = "default" + final_image[final_image.find('/'):]
+        stop_spinner = True
+        thread.join()
+        print(f"              Successfully built image: {final_image}\n")
 
         # Make sure the progress bar is full once this is completed
-        print(f"\r[{'=' * (progress_bar_length - 1)}>]", flush=True)
+        #print(f"\r    [{'=' * (progress_bar_length - 1)}>]", flush=True)
 
-        logger.warning(f"Build completed successfully.")
+        #logger.warning(f"    Build completed successfully.\n")
         #logger.warning(json.dumps(build_json_content, indent=2))
 
-        final_image = build_json_content["properties"]["destinationContainerRegistry"]["image"]
 
         # # Create Container App
         # app_creation_url = f"https://{rp_server}/subscriptions/{subscription_id}/resourcegroups/{resource_group_name}/providers/microsoft.app/containerApps/sourcetocloudtest?api-version={api_version}"
