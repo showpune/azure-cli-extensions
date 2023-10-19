@@ -546,25 +546,46 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         thread = display_spinner("Starting the build agent")
         generated_build_name = 'build{}'.format(uuid.uuid4().hex)[:12]
         build_creation_url = f"https://{rp_server}/subscriptions/{subscription_id}/resourcegroups/{resource_group_name}/providers/Microsoft.App/builders/{builder_name}/builds/{generated_build_name}?api-version={api_version}"
-        data = {"location":"eastus", "properties":{}}
+        data = {"location":"eastus2", "properties":{}}
         headers = {'Content-type': 'application/json', 'Accept': '*/*'}
         response_build_create = requests.put(build_creation_url, json.dumps(data), headers=headers, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
         if not (response_build_create.ok and response_build_create.content):
             raise ValidationError(f"Error when creating the build, request exited with {response_build_create.status_code}")
         build_create_json_content_data = response_build_create.content.decode("utf-8")
         build_create_json_content = json.loads(build_create_json_content_data)
+        # REMOVE
         #logger.warning(json.dumps(build_create_json_content, indent=2))
         build_name = build_create_json_content["name"]
         upload_endpoint = build_create_json_content["properties"]["uploadEndpoint"]
+        log_streaming_endpoint = build_create_json_content["properties"]["logStreamEndpoint"]
         local_upload_endpoint = upload_endpoint.replace(proxy_api_server_temp,proxy_api_server)
+        log_streaming_endpoint = log_streaming_endpoint.replace(proxy_api_server_temp,proxy_api_server)
         stop_spinner = True
         thread.join()
         print(f"              Build agent started: {build_name}")
+
+        # Token retrieval
+        stop_spinner = False
+        thread = display_spinner("Retrieving the authentication token")
+        token_retrieval_url = f"https://{rp_server}/subscriptions/{subscription_id}/resourcegroups/{resource_group_name}/providers/Microsoft.App/builders/{builder_name}/builds/{build_name}/listAuthToken?api-version={api_version}"
+        data = {"location":"eastus2", "properties":{}}
+        headers = {'Content-type': 'application/json', 'Accept': '*/*'}
+        response_token_retrieval = requests.post(token_retrieval_url, json.dumps(data), headers=headers, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
+        if not (response_token_retrieval.ok and response_token_retrieval.content):
+            raise ValidationError(f"Error when retrieving the token, request exited with {response_token_retrieval.status_code}")
+        token_retrieval_json_content_data = response_token_retrieval.content.decode("utf-8")
+        token_retrieval_json_content = json.loads(token_retrieval_json_content_data)
+        #logger.warning(json.dumps(token_retrieval_json_content, indent=2))
+        token = token_retrieval_json_content["token"]
+        stop_spinner = True
+        thread.join()
 
         # Source code compression
         stop_spinner = False
         thread = display_spinner(f"Compressing data: {font_bold}{source}{font_default}")
         tar_file_path = os.path.join(tempfile.gettempdir(), f"{build_name}.tar.gz")
+        #print("ICIIIIIIIIIIIIIIIIIIIIIII => " + tar_file_path)
+
         with tarfile.open(tar_file_path, "w:gz") as tar:
             _archive_file_recursively(tar,
                                       source,
@@ -578,25 +599,73 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
         # File upload
         stop_spinner = False
         thread = display_spinner(f"Uploading compressed data")
+        headers = {'Authorization': 'Bearer ' + token}
         files = [("file", ("build_data.tar.gz", open(tar_file_path, "rb"), "application/x-tar"))]
         response_file_upload = requests.post(
             local_upload_endpoint, 
-            files=files, 
+            files=files,
+            headers=headers,
             verify=False, 
             cert=(local_client_crt_location, local_client_crt_key_location))
+        stop_spinner = True
+        thread.join()
+        #logger.warning(json.dumps(response_file_upload.content.decode("utf-8"), indent=2))
         if not (response_file_upload.ok):
             raise ValidationError(f"Error when uploading the file, request exited with {response_file_upload.status_code}")
+
+        # Wait for provisioning state to succeed
+        stop_spinner = False
+        thread = display_spinner(f"Starting the build")
+        build_provisioning = True
+        while (build_provisioning):
+            build_response = requests.get(build_creation_url, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
+            if not (build_response.ok and build_response.content):
+                raise ValidationError(f"Error when retrieving the build, request exited with {build_response.status_code}")
+            build_json_content_data = build_response.content.decode("utf-8")
+            build_json_content = json.loads(build_json_content_data)
+            if build_json_content["properties"]["provisioningState"] == "Succeeded":
+                build_provisioning = False
+            time.sleep(2)
         stop_spinner = True
         thread.join()
 
-        # Wait for provisioning state to succeed
+        #print(f"logs command ======> curl -X GET -k --no-buffer -H 'Authorization: Bearer {token}' https://capps-proxy-azapi-2f945.azurewebsites.net/subscriptions/00ea74fa-bcee-499e-b677-f65de9a81aa0/resourceGroups/sourcetocloudtest1016/builders/demobuilder1016/builds/{build_name}/logstream")
+
+        # Stream the logs
+        stop_spinner = False
+        thread = display_spinner(f"Streaming logs...")
+        headers = {'Authorization': 'Bearer ' + token}
+        response_log_streaming = requests.get(
+            log_streaming_endpoint,
+            headers=headers,
+            verify=False,
+            stream=True,
+            cert=(local_client_crt_location, local_client_crt_key_location))
+        stop_spinner = True
+        thread.join()
+        #logger.warning("ICIIIILA")
+        print(f"\n  {font_bold}Logs stream:{font_default}")
+        for line in response_log_streaming.iter_lines():
+            log_line = line.decode("utf-8")
+            print(f"{log_line}")
+        #logger.warning("DOUDOU")
+
+        # logger.warning(log_streaming_endpoint)
+        # logger.warning(json.dumps(response_log_streaming.content.decode("utf-8"), indent=2))
+        if not (response_log_streaming.ok):
+            raise ValidationError(f"Error when streaming the logs, request exited with {response_log_streaming.status_code}")
+
+
+        return build_json_content["properties"]["destinationContainerRegistry"]["image"]
+
+        # Wait for build status to succeed
         stop_spinner = False
         thread = display_spinner(f"Building and containerizing the application")
         # progress_bar_length = 80
         # progress_bar_expected_duration = 10
         # progress_bar_elapsed_duration = 0
-        build_provisioning = True
-        while (build_provisioning):
+        build_running = True
+        while (build_running):
             # elapsed_bar_length = int(progress_bar_length * progress_bar_elapsed_duration / progress_bar_expected_duration)
             # filled_bar_length = elapsed_bar_length
             # remaining_bar_length = progress_bar_length - filled_bar_length - 1
@@ -607,16 +676,19 @@ class ContainerApp(Resource):  # pylint: disable=too-many-instance-attributes
                 raise ValidationError(f"Error when retrieving the build, request exited with {build_response.status_code}")
             build_json_content_data = build_response.content.decode("utf-8")
             build_json_content = json.loads(build_json_content_data)
-            if build_json_content["properties"]["provisioningState"] == "Succeeded":
-                build_provisioning = False
-            time.sleep(3)
+            if build_json_content["properties"]["buildStatus"] == "Succeeded":
+                build_running = False
+            time.sleep(5)
             #progress_bar_elapsed_duration = progress_bar_elapsed_duration + 0.5
         final_image = build_json_content["properties"]["destinationContainerRegistry"]["image"]
         # Hack while we get the final format
-        final_image = "default" + final_image[final_image.find('/'):]
+        final_image = final_image# "default" + final_image[final_image.find('/'):]
         stop_spinner = True
         thread.join()
         print(f"              Successfully built image: {font_bold}{final_image}{font_default}\n")
+
+        # Delete local file
+        #os.unlink(tar_file_path)
 
         # Make sure the progress bar is full once this is completed
         #print(f"\r    [{'=' * (progress_bar_length - 1)}>]", flush=True)

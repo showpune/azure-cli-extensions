@@ -175,7 +175,7 @@ class ContainerAppClient():
         #logger.warning(json.dumps(container_app_envelope))
 
         environment_id = container_app_envelope["properties"]["environmentId"]
-        image = "10.0.204.141/buildcd29e3a"#container_app_envelope["properties"]["template"]["containers"][0]["image"]
+        image = container_app_envelope["properties"]["template"]["containers"][0]["image"]#"10.0.204.141/buildcd29e3a"
         requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
         container_app_payload = "{{'location': 'eastus2','properties': {{'managedEnvironmentId': '{}','configuration': {{'ingress': {{'external': true,'targetPort': 8080}}}},'template': {{'containers': [{{'image': '{}','name': 'ca-daniv-test-10052'}}]}}}}}}"
@@ -187,7 +187,7 @@ class ContainerAppClient():
         headers = {'Content-type': 'application/json', 'Accept': '*/*', 'Connection': 'keep-alive', 'Accept-Encoding': 'gzip, deflate, br', 'User-Agent': 'PostmanRuntime/7.33.1', 'Cache-Control': 'no-cache'}
         #response = requests.put(request_url, json.dumps(container_app_envelope), headers=headers, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
         #Remove: hack to make sure we don't create too quickly
-        time.sleep(10)
+        #time.sleep(10)
         while(True):
             response = requests.put(request_url, container_app_envelope, headers=headers, verify=False, cert=(local_client_crt_location, local_client_crt_key_location))
             #break;
